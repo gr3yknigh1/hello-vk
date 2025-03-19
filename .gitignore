@@ -1,0 +1,11 @@
+
+# Visual Studio
+.vs/
+x64/
+
+*.user
+
+# Vim
+*.swp
+
+
