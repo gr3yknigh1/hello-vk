@@ -6,7 +6,10 @@
 
 #include <vector>
 #include <memory>
+#include <optional>
 #include <string_view>
+#include <utility>
+#include <set>
 
 #define VK_USE_PLATFORM_WIN32_KHR
 #include <vulkan/vulkan.h>

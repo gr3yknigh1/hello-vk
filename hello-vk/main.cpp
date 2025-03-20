@@ -11,6 +11,20 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL vk_debug_callback(
     const VkDebugUtilsMessengerCallbackDataEXT* callback_data, 
     void* user_data);
 
+///
+/// @brief Searches for indices of queue which supports `present` and `graphics` from queue families of physical device.
+///
+/// @note For full support both of indices should has non-null values.
+///
+std::pair<std::optional<uint32_t>, std::optional<uint32_t>> vk_find_queue_family_indices(VkPhysicalDevice device, VkSurfaceKHR surface);
+
+VkPhysicalDevice vk_pick_physical_device(VkInstance instance, VkSurfaceKHR surface, const std::vector<const char*>& required_device_extensions);
+
+VkDevice vk_make_logical_device(
+    VkPhysicalDevice physical_device, 
+    const std::vector<const char *> &required_validation_layers, const std::vector<const char *> &required_device_extensions,
+    uint32_t graphics_queue_index, uint32_t present_queue_index, bool enable_validation_layers);
+
 int
 main(void) {
     using namespace std::literals;
@@ -174,107 +188,100 @@ main(void) {
     }
 
     //
-    // VK Physical device:
+    // VK: surface creation.
     //
-    uint32_t vk_physical_devices_count = 0;
-    SDL_assert(vkEnumeratePhysicalDevices(vk_instance, &vk_physical_devices_count, nullptr) == VK_SUCCESS);
-    SDL_assert(vk_physical_devices_count);
-
-    std::vector<VkPhysicalDevice> vk_physical_devices(vk_physical_devices_count);
-    SDL_assert(vkEnumeratePhysicalDevices(
-        vk_instance, &vk_physical_devices_count, vk_physical_devices.data()) == VK_SUCCESS);
-
-    //
-    // VK Picking physical device:
-    //
-    VkPhysicalDevice vk_physical_device = VK_NULL_HANDLE;
-    for (auto &device : vk_physical_devices) {
-        VkPhysicalDeviceProperties device_properties = {};
-        vkGetPhysicalDeviceProperties(device, &device_properties);
-
-        VkPhysicalDeviceFeatures device_features;
-        vkGetPhysicalDeviceFeatures(device, &device_features);
-
-        // NOTE(gr3yknigh1): I do not want to implement GPU picking right now [2025/03/20]
-        vk_physical_device = device;
-        break;
-#if 0
-        if (device_properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU && device_features.geometryShader) {
-            break;
-        }
-#endif
-    }
-
-    SDL_assert(vk_physical_device);
-
-    //
-    // Picking Queue family:
-    // TODO(gr3yknigh1): Move to Physical Device Picking! [2025/03/20]
-    //
-    uint32_t vk_queue_family_count = 0;
-    vkGetPhysicalDeviceQueueFamilyProperties(vk_physical_device, &vk_queue_family_count, nullptr);
-
-    [[maybe_unused]] std::vector<VkQueueFamilyProperties> vk_queue_families(vk_queue_family_count);
-    vkGetPhysicalDeviceQueueFamilyProperties(vk_physical_device, &vk_queue_family_count, vk_queue_families.data());
-
-    int32_t vk_queue_family_index = -1;
-
-    for (int32_t index = 0; index < vk_queue_families.size(); ++index) {
-        auto queue_family = vk_queue_families[index];
-
-        if (queue_family.queueFlags & VK_QUEUE_GRAPHICS_BIT) {
-            vk_queue_family_index = index;
-        }
-    }
-    
-    SDL_assert(vk_queue_family_index != -1);
-
-    VkDevice vk_device = VK_NULL_HANDLE;
-
-    VkDeviceQueueCreateInfo vk_queue_create_info = {};
-    vk_queue_create_info.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
-    vk_queue_create_info.queueFamilyIndex = vk_queue_family_index;
-    vk_queue_create_info.queueCount = 1;
-
-    float vk_queue_priority = 1.0f;
-    vk_queue_create_info.pQueuePriorities = &vk_queue_priority;
-
-    VkPhysicalDeviceFeatures vk_device_features = {}; // TODO(gr3yknigh1): Go back later... [2025/03/20]
-    
-    VkDeviceCreateInfo vk_device_create_info = {};
-    vk_device_create_info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
-    vk_device_create_info.pQueueCreateInfos = &vk_queue_create_info;
-    vk_device_create_info.queueCreateInfoCount = 1;
-
-    vk_device_create_info.pEnabledFeatures = &vk_device_features;
-    vk_device_create_info.enabledExtensionCount = 0;
-
-    if (s_vk_enable_validation_layers) {
-        vk_device_create_info.enabledLayerCount = static_cast<uint32_t>(vk_required_validation_layers.size());
-        vk_device_create_info.ppEnabledLayerNames = vk_required_validation_layers.data();
-    } else {
-        vk_device_create_info.enabledLayerCount = 0;
-    }
-
-    vk_result = vkCreateDevice(vk_physical_device, &vk_device_create_info, nullptr, &vk_device);
-    if (vk_result != VK_SUCCESS) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "vkCreateDevice() = %s", string_VkResult(vk_result));
-        SDL_TriggerBreakpoint();
-        return EXIT_FAILURE;
-    }
-    defer(vkDestroyDevice(vk_device, nullptr));
-
-    VkQueue vk_gfx_queue = VK_NULL_HANDLE;
-    vkGetDeviceQueue(vk_device, vk_queue_family_index, 0, &vk_gfx_queue);
-    SDL_assert(vk_gfx_queue);
-
     VkSurfaceKHR vk_surface = VK_NULL_HANDLE;
     SDL_assert(SDL_Vulkan_CreateSurface(window, vk_instance, &vk_surface));
+    defer(vkDestroySurfaceKHR(vk_instance, vk_surface, nullptr));
 
-    VkBool32 vk_is_surface_supported = false;
-    SDL_assert(vkGetPhysicalDeviceSurfaceSupportKHR(
-        vk_physical_device, vk_queue_family_index, vk_surface, &vk_is_surface_supported) == VK_SUCCESS);
-    SDL_assert(vk_is_surface_supported);
+    //
+    // VK: physical device.
+    //
+    std::vector<const char *> vk_required_device_extensions = {
+        VK_KHR_SWAPCHAIN_EXTENSION_NAME
+    };
+
+    VkPhysicalDevice vk_physical_device = vk_pick_physical_device(vk_instance, vk_surface, vk_required_device_extensions);  
+    SDL_assert(vk_physical_device);
+    // ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    // TODO(gr3yknigh1): Need cleanup? [2025/03/20]
+
+    //
+    // VK: picking queue family.
+    // TODO(gr3yknigh1): Move to Physical Device Picking! [2025/03/20]
+    //
+    auto [vk_graphics_queue_index, vk_present_queue_index] = 
+        vk_find_queue_family_indices(vk_physical_device, vk_surface);
+
+    SDL_assert(vk_graphics_queue_index.has_value());
+    SDL_assert(vk_present_queue_index.has_value());
+
+    //
+    // VK: logical device.
+    //
+    VkDevice vk_device = vk_make_logical_device(
+        vk_physical_device, vk_required_validation_layers, vk_required_device_extensions, vk_graphics_queue_index.value(),
+        vk_present_queue_index.value(), s_vk_enable_validation_layers);
+    defer(vkDestroyDevice(vk_device, nullptr));
+
+    VkQueue vk_graphics_queue = VK_NULL_HANDLE, vk_present_queue = VK_NULL_HANDLE;
+
+    vkGetDeviceQueue(vk_device, vk_graphics_queue_index.value(), 0, &vk_graphics_queue);
+    SDL_assert(vk_graphics_queue);
+
+    vkGetDeviceQueue(vk_device, vk_present_queue_index.value(), 0, &vk_present_queue);
+    SDL_assert(vk_present_queue);
+
+    //
+    // VK: searching for surface format.
+    // NOTE(gr3yknigh1): Duplication on physical device picking [2025/03/20]
+    //
+    uint32_t vk_surface_formats_count = 0;
+    SDL_assert(vkGetPhysicalDeviceSurfaceFormatsKHR(vk_physical_device, vk_surface, &vk_surface_formats_count, nullptr) == VK_SUCCESS);
+
+    std::vector<VkSurfaceFormatKHR> vk_surface_formats(vk_surface_formats_count);
+    SDL_assert(vkGetPhysicalDeviceSurfaceFormatsKHR(
+        vk_physical_device, vk_surface, &vk_surface_formats_count, vk_surface_formats.data()) == VK_SUCCESS);
+
+    std::optional<VkSurfaceFormatKHR> vk_surface_format = std::nullopt;
+    for (auto &format : vk_surface_formats) {
+        if (format.format == VK_FORMAT_B8G8R8A8_SRGB && format.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
+            vk_surface_format = format;
+        }
+    }
+    SDL_assert(vk_surface_format.has_value());
+
+    //
+    // VK: searching for present mode.
+    //
+
+    uint32_t vk_present_modes_count = 0;
+    SDL_assert(vkGetPhysicalDeviceSurfacePresentModesKHR(
+        vk_physical_device, vk_surface, &vk_present_modes_count, nullptr) == VK_SUCCESS);
+
+    std::vector<VkPresentModeKHR> vk_present_modes(vk_present_modes_count);
+    SDL_assert(vkGetPhysicalDeviceSurfacePresentModesKHR(
+        vk_physical_device, vk_surface, &vk_present_modes_count, vk_present_modes.data()) == VK_SUCCESS);
+
+    using namespace std;
+
+    optional<VkPresentModeKHR> vk_present_mode = nullopt;
+    for (auto &present_mode : vk_present_modes) {
+        if (present_mode == VK_PRESENT_MODE_MAILBOX_KHR) {
+            vk_present_mode = present_mode;
+        }
+    }
+    if (!vk_present_mode) {
+        vk_present_mode = VK_PRESENT_MODE_FIFO_KHR;
+    }
+
+    //
+    // VK: swap extent.
+    //
+#if 0
+    VkSurfaceCapabilitiesKHR vk_capabilities;
+    SDL_assert(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(vk_physical_device, vk_surface, &vk_capabilities) == VK_SUCCESS);
+#endif
 
     //
     // Main loop:
@@ -308,10 +315,167 @@ vk_debug_callback(
     const VkDebugUtilsMessengerCallbackDataEXT* callback_data, void* user_data)
 {
     if (message_severity >= VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT) {
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Vulkan: Message: %s", callback_data->pMessage);
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Vulkan: %s", callback_data->pMessage);
     }
     else {
-        SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "Vulkan: Message(Debug): %s", callback_data->pMessage);
+        SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "Vulkan: %s", callback_data->pMessage);
     }
     return VK_FALSE;
+}
+
+std::pair<std::optional<uint32_t>, std::optional<uint32_t>> 
+vk_find_queue_family_indices(VkPhysicalDevice device, VkSurfaceKHR surface)
+{
+    uint32_t queue_family_count = 0;
+    vkGetPhysicalDeviceQueueFamilyProperties(device, &queue_family_count, nullptr);
+
+    std::vector<VkQueueFamilyProperties> queue_families(queue_family_count);
+    vkGetPhysicalDeviceQueueFamilyProperties(device, &queue_family_count, queue_families.data());
+
+    std::optional<uint32_t> graphics_queue_index = std::nullopt;
+    std::optional<uint32_t> present_queue_index = std::nullopt;
+
+    for (uint32_t index = 0; index < queue_families.size(); ++index) {
+        auto queue_family = queue_families[index];
+
+        if (queue_family.queueFlags & VK_QUEUE_GRAPHICS_BIT) {
+            graphics_queue_index = index;
+            continue; // TODO(gr3yknigh1): Gain more information about Queue picking. Made this because validators complained about same queue index from same family [2025/03/20]
+        }
+        
+        VkBool32 is_surface_supported = false;
+        SDL_assert(vkGetPhysicalDeviceSurfaceSupportKHR(
+            device, index, surface, &is_surface_supported) == VK_SUCCESS);
+        SDL_assert(is_surface_supported);
+
+        if (is_surface_supported) {
+            present_queue_index = index;
+        }
+
+        if (graphics_queue_index.has_value() && present_queue_index.has_value()) {
+            break;
+        }
+    }
+
+    return { graphics_queue_index, present_queue_index };
+}
+
+VkPhysicalDevice 
+vk_pick_physical_device(VkInstance instance, VkSurfaceKHR surface, const std::vector<const char *> &required_device_extensions)
+{
+    using namespace std::literals;
+
+    std::vector<std::string_view> required_device_extensions_views(required_device_extensions.begin(), required_device_extensions.end());
+
+    VkPhysicalDevice result = VK_NULL_HANDLE;
+
+    uint32_t devices_count = 0;
+    SDL_assert(vkEnumeratePhysicalDevices(instance, &devices_count, nullptr) == VK_SUCCESS);
+    SDL_assert(devices_count);
+
+    std::vector<VkPhysicalDevice> devices(devices_count);
+    SDL_assert(vkEnumeratePhysicalDevices(instance, &devices_count, devices.data()) == VK_SUCCESS);
+
+    for (auto &device : devices) {
+        [[maybe_unused]] VkPhysicalDeviceProperties device_properties = {};
+        vkGetPhysicalDeviceProperties(device, &device_properties);
+
+        [[maybe_unused]] VkPhysicalDeviceFeatures device_features = {};
+        vkGetPhysicalDeviceFeatures(device, &device_features);
+
+        auto [graphics_index, present_index] = vk_find_queue_family_indices(device, surface);
+
+        if (!graphics_index.has_value() || !present_index.has_value()) {
+            continue;
+        }
+
+        uint32_t extension_count = 0;
+        SDL_assert(vkEnumerateDeviceExtensionProperties(device, nullptr, &extension_count, nullptr) == VK_SUCCESS);
+
+        std::vector<VkExtensionProperties> available_extensions(extension_count);
+        SDL_assert(vkEnumerateDeviceExtensionProperties(device, nullptr, &extension_count, available_extensions.data()) == VK_SUCCESS);
+
+        uint32_t extension_matches_count = 0;
+        for (const auto &extension : available_extensions) {
+            for (const auto &required_extension : required_device_extensions_views) {
+                if (required_extension == extension.extensionName) {
+                    extension_matches_count++;
+                    break;
+                }
+            }
+        }
+
+        bool all_required_extensions_supported = extension_matches_count == required_device_extensions_views.size();
+
+        if (all_required_extensions_supported) {
+            uint32_t surface_formats_count = 0;
+            SDL_assert(vkGetPhysicalDeviceSurfaceFormatsKHR(device, surface, &surface_formats_count, nullptr) == VK_SUCCESS);
+
+            uint32_t present_mode_count = 0;
+            SDL_assert(vkGetPhysicalDeviceSurfaceFormatsKHR(device, surface, &present_mode_count, nullptr) == VK_SUCCESS);
+
+            if (surface_formats_count > 0 && present_mode_count > 0) {
+                result = device;
+                break;
+            }
+        }
+
+#if 0
+        if (device_properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU && device_features.geometryShader) {
+            break;
+        }
+#endif
+    }
+
+    return result;
+}
+
+VkDevice 
+vk_make_logical_device(
+    VkPhysicalDevice physical_device, const std::vector<const char*>& required_validation_layers, const std::vector<const char*>& required_device_extensions,
+    uint32_t graphics_queue_index, uint32_t present_queue_index, bool enable_validation_layers)
+{
+    VkDevice device = VK_NULL_HANDLE;
+    float queue_priority = 1.0f;
+
+    VkDeviceQueueCreateInfo queue_create_infos[2] = {};
+
+    queue_create_infos[0].sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+    queue_create_infos[0].queueFamilyIndex = graphics_queue_index;
+    queue_create_infos[0].queueCount = 1;
+    queue_create_infos[0].pQueuePriorities = &queue_priority;
+
+    queue_create_infos[1].sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+    queue_create_infos[1].queueFamilyIndex = present_queue_index; 
+    queue_create_infos[1].queueCount = 1;
+    queue_create_infos[1].pQueuePriorities = &queue_priority;
+
+    VkPhysicalDeviceFeatures device_features = {}; // TODO(gr3yknigh1): Go back later... [2025/03/20]
+    
+    VkDeviceCreateInfo device_create_info = {};
+    device_create_info.sType                = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
+    device_create_info.pQueueCreateInfos    = queue_create_infos;
+    device_create_info.queueCreateInfoCount = 2;
+    
+    device_create_info.pEnabledFeatures     = &device_features;
+    
+    device_create_info.ppEnabledExtensionNames = required_device_extensions.data();
+    device_create_info.enabledExtensionCount = static_cast<uint32_t>(required_device_extensions.size());
+
+    if (enable_validation_layers) {
+        device_create_info.enabledLayerCount = static_cast<uint32_t>(required_validation_layers.size());
+        device_create_info.ppEnabledLayerNames = required_validation_layers.data();
+    } else {
+        device_create_info.enabledLayerCount = 0;
+    }
+
+    VkResult result = vkCreateDevice(physical_device, &device_create_info, nullptr, &device);
+    if (result != VK_SUCCESS) {
+        // TODO(gr3yknigh1): Find another way to report error from here [2025/03/20]
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "vkCreateDevice() = %s", string_VkResult(result));
+        SDL_TriggerBreakpoint();
+        return VK_NULL_HANDLE;
+    }
+
+    return device;
 }
