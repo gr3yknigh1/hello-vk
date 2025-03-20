@@ -268,6 +268,14 @@ main(void) {
     vkGetDeviceQueue(vk_device, vk_queue_family_index, 0, &vk_gfx_queue);
     SDL_assert(vk_gfx_queue);
 
+    VkSurfaceKHR vk_surface = VK_NULL_HANDLE;
+    SDL_assert(SDL_Vulkan_CreateSurface(window, vk_instance, &vk_surface));
+
+    VkBool32 vk_is_surface_supported = false;
+    SDL_assert(vkGetPhysicalDeviceSurfaceSupportKHR(
+        vk_physical_device, vk_queue_family_index, vk_surface, &vk_is_surface_supported) == VK_SUCCESS);
+    SDL_assert(vk_is_surface_supported);
+
     //
     // Main loop:
     //
