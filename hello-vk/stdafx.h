@@ -4,12 +4,19 @@
 #include <stdint.h>
 #include <stdio.h>
 
+#include <array>
+#include <limits>
+#include <algorithm>
 #include <vector>
 #include <memory>
 #include <optional>
 #include <string_view>
 #include <utility>
 #include <set>
+
+#if !defined(NOMINMAX)
+    #define NOMINMAX
+#endif
 
 #define VK_USE_PLATFORM_WIN32_KHR
 #include <vulkan/vulkan.h>
